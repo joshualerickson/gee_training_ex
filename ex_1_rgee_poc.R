@@ -37,6 +37,8 @@ studyArea = compositeArea$buffer(buffer_distance)
 fB=studyArea
 Map$centerObject(studyArea)
 
+ ############# Now all the functions to get a final function getComp() #########################
+
 #Use data mask from Hansen's Global Forest Change as a water mask
 forestChangeImage = ee$Image('UMD/hansen/global_forest_change_2019_v1_7')
 mskW = forestChangeImage$select('datamask')
@@ -164,3 +166,10 @@ composite = getComp(2016,4,startJulian,endJulian)
 
 Map$addLayer(composite$clip(compositeArea),
              visParams = list(min = 0, max = 3000, bands = c('red', 'green', 'blue'), gamma = 1.5))
+
+#or using exploreRGEE
+
+composite %>% exploreRGEE::viz(min = 0, max = 3000,
+                               band = c('nir', 'green', 'blue'),
+                               gamma = 1.5,
+                               user_shape = shapes)
