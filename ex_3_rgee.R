@@ -175,7 +175,7 @@ climateBands = winter_precip$addBands(c(summer_precip,
                                            winter_tmean,
                                            summer_tmean,
                                            difference_tmean))
-meta <- climateBands$getInfo()
+
 
 # // Clip to ROI boundaries
 climateBands = climateBands$clip(shapes_boundary)
