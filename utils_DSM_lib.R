@@ -2,13 +2,33 @@
 #   // ***** LOAD LANDSAT COMPOSITE ***** //
 #   ////////////////////////////////////////////////////////////////////////////
 #
+# Assumes the image is a Landsat image
+
+maskCloudsAndSuch = function(img, cloudThresh  = 20){
+  #Bust clouds
+  cs = ee$Algorithms$Landsat$simpleCloudScore(img)$select('cloud')$gt(cloudThresh)
+  #Make sure all or no bands have data
+  numberBandsHaveData = img$mask()$reduce(ee$Reducer$sum())
+  allOrNoBandsHaveData = numberBandsHaveData$eq(0)$Or(numberBandsHaveData$gte(7))
+
+  #If it's Landsat 5- defringe by nibbling away at the fringes
+  allBandsHaveData = allOrNoBandsHaveData
+
+  #.focal_min(1,'square','pixels',8)
+
+  #Make sure no band is just under zero
+  allBandsGT = img$reduce(ee$Reducer$min())$gt(-0.001)
+  return(img$mask(img$mask()$And(cs$Not())$And(allBandsHaveData)$And(allBandsGT)))
+}
+
 
 getComp = function(compositeArea, year, compositingPeriod, startJulian, endJulian, exportToDrive, roiName, crs) {
 
+  if(class(compositeArea)[[1]] == "sf"){
   compositeArea <- compositeArea %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
   bb <- sf::st_bbox(compositeArea)
   compositeArea <- ee$Geometry$Rectangle(bb)
-
+  }
 
     # // **** USER EDITABLE VARIABLES **** //
     #   //Composite parameters
@@ -30,7 +50,7 @@ getComp = function(compositeArea, year, compositingPeriod, startJulian, endJulia
     studyArea = compositeArea$buffer(buffer_distance)
 
     fB=studyArea
-    Map$centerObject(studyArea)
+    # Map$centerObject(studyArea)
     # //////////////////////////////////////////////////////
     #   //Use data mask from Hansen's Global Forest Change as a water mask
     #Use data mask from Hansen's Global Forest Change as a water mask
@@ -43,14 +63,6 @@ getComp = function(compositeArea, year, compositingPeriod, startJulian, endJulia
     # Further smooth the image via focal_max
     watermask = maskFocalMode$focal_max(5, "square", "pixels", 5 )
 
-    #Names of collections to look in
-    #Add _L1T for L1T imagery
-    #TOA is computed on both the L1G or L1T
-    collection_dict = list(L8 = "LANDSAT/LC08/C01/T1_TOA",
-                           L7 = "LANDSAT/LE07/C01/T1_TOA",
-                           L5 = "LANDSAT/LT05/C01/T1_TOA",
-                           L4 = "LANDSAT/LT04/C01/T1_TOA")
-
     #Band combinations for each sensor corresponding to final selected corresponding bands
     sensor_band_dict = ee$Dictionary(list(L8 = ee$List(c(1,2,3,4,5,9,6)),
                                           L7 = ee$List(c(0,1,2,3,4,5,7)),
@@ -62,104 +74,98 @@ getComp = function(compositeArea, year, compositingPeriod, startJulian, endJulia
     STD_NAMES = c('blue','green','red','nir','swir1','temp','swir2')
     bandNumbers = c(0,1,2,3,4,5,6)
 
-    # Assumes the image is a Landsat image
-    maskCloudsAndSuch = function(img){
-      #Bust clouds
-      cs = ee$Algorithms$Landsat$simpleCloudScore(img)$select('cloud')$gt(cloudThresh)
-      #Make sure all or no bands have data
-      numberBandsHaveData = img$mask()$reduce(ee$Reducer$sum())
-      allOrNoBandsHaveData = numberBandsHaveData$eq(0)$Or(numberBandsHaveData$gte(7))
-
-      #If it's Landsat 5- defringe by nibbling away at the fringes
-      allBandsHaveData = allOrNoBandsHaveData
-
-      #.focal_min(1,'square','pixels',8)
-
-      #Make sure no band is just under zero
-      allBandsGT = img$reduce(ee$Reducer$min())$gt(-0.001)
-      return(img$mask(img$mask()$And(cs$Not())$And(allBandsHaveData)$And(allBandsGT)))
-    }
-
-    # Basic shadow masking using sum of specified bands
-    # Tends to include hill shadows and water
-    shadowThresh = 0.1
-    shadowSumBands = c('nir','swir1','swir2')
-    maskShadows = function(img){
-      ss = img$select(shadowSumBands)$reduce(ee$Reducer$sum())
-      return(img$mask(img$mask()$And(ss$gt(shadowThresh))))
-    }
-
-    # Function to handle empty collections that will cause subsequent processes to fail
-    # If the collection is empty, will fill it with an empty image
-    fillEmptyCollections = function(inCollection,dummyImage){
-      dummyCollection = ee$ImageCollection(dummyImage$mask(ee$Image(0)))
-      imageCount = inCollection$toList(1)$length()
-      return(ee$ImageCollection(ee$Algorithms$If(imageCount$gt(0),inCollection,dummyCollection)))
-
-    }
-
-    getImage = function(year,compositingPeriod, startJulian,endJulian){
-
-      #Define dates
-      y1Image = year
-      y2Image = year + compositingPeriod
-
-      startDate = ee$Date$fromYMD(ee$Number(year),1,1)$advance(startJulian,'day')
-      endDate = ee$Date$fromYMD(ee$Number(year)$add(ee$Number(compositingPeriod)),1,1)$advance(endJulian,'day')
 
 
-      #Helper function to get images from a specified sensor
-      getCollection = function(sensor,startDate,endDate,startJulian,endJulian){
 
-        collectionName = collection_dict[sensor][[1]]
+  #Define dates
+  y1Image = year
+  y2Image = year + compositingPeriod
 
-        #Start with an un-date-confined collection of iamges
-        WOD = ee$ImageCollection(collectionName)$filterBounds(fB)
+  startDate = ee$Date$fromYMD(ee$Number(year),1,1)$advance(startJulian,'day')
+  endDate = ee$Date$fromYMD(ee$Number(year)$add(ee$Number(compositingPeriod)),1,1)$advance(endJulian,'day')
 
-        #Pop off an image to serve as a template if there are no images in the date range
-        dummy = ee$Image(WOD$first())
 
-        #Filter by the dates
-        ls = WOD$filterDate(startDate,endDate)$filter(ee$Filter$calendarRange(startJulian,endJulian))
-
-        #Fill the collection if it's empty
-        ls = fillEmptyCollections(ls,dummy)
-
-        #Clean the collection up- clouds, fringes....
-        ls = ls$map(rgee::ee_utils_pyfunc(maskCloudsAndSuch))$select(sensor_band_dict$get(sensor),bandNames)$map(rgee::ee_utils_pyfunc(maskShadows))
-        return(ls)
-      }
-      #Get the images for composite and shadow model
-      if(!is.null(possibleSensors)){
-        l5s = getCollection('L5',startDate,endDate,startJulian,endJulian)
-      }
-      else{l5s = getCollection('L5',ee$Date('1000-01-01'),ee$Date('1001-01-01'),0,365)}
-
-      if(!is.null(possibleSensors)){
-        l7s = getCollection('L7',startDate,endDate,startJulian,endJulian)
-      }
-      else{l7s = getCollection('L7',ee$Date('1000-01-01'),ee$Date('1001-01-01'),0,365)}
-
-      if(!is.null(possibleSensors)){
-        l8s = getCollection('L8',startDate,endDate,startJulian,endJulian)
-      }
-      else{l8s = getCollection('L8',ee$Date('1000-01-01'),ee.Date('1001-01-01'),0,365)}
-
-      ls = ee$ImageCollection(l5s$merge(l7s)$merge(l8s))
-      composite = ls$reduce(reducer)$select(bandNumbers,bandNames)$mask(watermask)
-      composite = composite$mask(composite$mask()$And(watermask)$clip(studyArea))
-
-      fullName = paste0(roiName,'_',y1Image$toString(),'_' ,y2Image$toString(),'_',startJulian$toString(),'_',endJulian$toString(),'_Composite')
-
-      #Set up our final composite with bands we'd like to include
-      composite = composite$select(c('blue','green','red','nir','swir1','swir2'))$multiply(10000)$int16()$clip(fB)
-
-      return(composite)
-
-    }
+  #Get the images for composite and shadow model
+  if(!is.null(possibleSensors)){
+    l5s = getCollection('L5',startDate,endDate,startJulian,endJulian)
   }
+  else{l5s = getCollection('L5',ee$Date('1000-01-01'),ee$Date('1001-01-01'),0,365)}
 
+  if(!is.null(possibleSensors)){
+    l7s = getCollection('L7',startDate,endDate,startJulian,endJulian)
+  }
+  else{l7s = getCollection('L7',ee$Date('1000-01-01'),ee$Date('1001-01-01'),0,365)}
 
+  if(!is.null(possibleSensors)){
+    l8s = getCollection('L8',startDate,endDate,startJulian,endJulian)
+  }
+  else{l8s = getCollection('L8',ee$Date('1000-01-01'),ee.Date('1001-01-01'),0,365)}
+
+  ls = ee$ImageCollection(l5s$merge(l7s)$merge(l8s))
+  composite = ls$reduce(reducer)$select(bandNumbers,bandNames)$mask(watermask)
+  composite = composite$mask(composite$mask()$And(watermask)$clip(studyArea))
+
+  #fullName = paste0(roiName,'_',y1Image$toString(),'_' ,y2Image$toString(),'_',startJulian$toString(),'_',endJulian$toString(),'_Composite')
+
+  #Set up our final composite with bands we'd like to include
+  composite = composite$select(c('blue','green','red','nir','swir1','swir2'))$multiply(10000)$int16()$clip(fB)
+
+  return(composite)
+
+}
+
+# Basic shadow masking using sum of specified bands
+# Tends to include hill shadows and water
+
+maskShadows = function(img){
+  shadowThresh = 0.1
+shadowSumBands = c('nir','swir1','swir2')
+ss = img$select(shadowSumBands)$reduce(ee$Reducer$sum())
+  return(img$mask(img$mask()$And(ss$gt(shadowThresh))))
+}
+
+# Function to handle empty collections that will cause subsequent processes to fail
+# If the collection is empty, will fill it with an empty image
+fillEmptyCollections = function(inCollection,dummyImage){
+  dummyCollection = ee$ImageCollection(dummyImage$mask(ee$Image(0)))
+  imageCount = inCollection$toList(1)$length()
+  return(ee$ImageCollection(ee$Algorithms$If(imageCount$gt(0),inCollection,dummyCollection)))
+
+}
+#Helper function to get images from a specified sensor
+
+getCollection = function(sensor,startDate,endDate,startJulian,endJulian){
+
+  #Names of collections to look in
+  #Add _L1T for L1T imagery
+  #TOA is computed on both the L1G or L1T
+  collection_dict = list(L8 = "LANDSAT/LC08/C01/T1_TOA",
+                         L7 = "LANDSAT/LE07/C01/T1_TOA",
+                         L5 = "LANDSAT/LT05/C01/T1_TOA",
+                         L4 = "LANDSAT/LT04/C01/T1_TOA")
+  sensor_band_dict = ee$Dictionary(list(L8 = ee$List(c(1,2,3,4,5,9,6)),
+                                        L7 = ee$List(c(0,1,2,3,4,5,7)),
+                                        L5 = ee$List(c(0,1,2,3,4,5,6)),
+                                        L4 = ee$List(c(0,1,2,3,4,5,6))))
+  bandNames = ee$List(c('blue','green','red','nir','swir1','temp','swir2'))
+  collectionName = collection_dict[sensor][[1]]
+
+  #Start with an un-date-confined collection of iamges
+  WOD = ee$ImageCollection(collectionName)
+
+  #Pop off an image to serve as a template if there are no images in the date range
+  dummy = ee$Image(WOD$first())
+
+  #Filter by the dates
+  ls = WOD$filterDate(startDate,endDate)$filter(ee$Filter$calendarRange(startJulian,endJulian))
+
+  #Fill the collection if it's empty
+  ls = fillEmptyCollections(ls,dummy)
+
+  #Clean the collection up- clouds, fringes....
+  ls = ls$map(rgee::ee_utils_pyfunc(maskCloudsAndSuch))$select(sensor_band_dict$get(sensor),bandNames)$map(rgee::ee_utils_pyfunc(maskShadows))
+  return(ls)
+}
 #
 # ////////////////////////////////////////////////////////////////////////////
 #   // ***** LOAD SPECTRAL BANDS ***** //
@@ -173,7 +179,7 @@ getNDVI = function (inImage) {
 
   # now add this to composite as band
 
-  composite_ndvi <- composite$addBands(ndvi)
+  composite_ndvi <- inImage$addBands(ndvi)
   }
 
 
@@ -253,8 +259,8 @@ getTasseledCap = function(image) {
   # // Make an Array Image with a 2-D Array per pixel, 6x1.
    arrayImage2D = arrayImage1D$toArray(1)
 
-   componentsImage = ee$Image(coefficients)$matrixMultiply(arrayImage2D)$arrayProject(0)$arrayFlatten(c('brightness', 'greenness', 'wetness', 'fourth', 'fifth', 'sixth'))$float()
-
+   componentsImage = ee$Image(coefficients)$matrixMultiply(arrayImage2D)$arrayProject(list(0))$arrayFlatten(list(c('brightness', 'greenness', 'wetness', 'fourth', 'fifth', 'sixth')))$float()
+meta = componentsImage$getInfo()
   return(image$addBands(componentsImage))
 }
 
@@ -285,26 +291,34 @@ getSpectralIndices = function (inImage, crs){
 #   // ***** LOAD TOPO DERIVS ***** //
 #   ////////////////////////////////////////////////////////////////////////////
 
-getTopo = function(aoi, crs){
+getTopo = function(compositeArea, image){
 
-    # // Get boundary area of ROI
-  aoi <- aoi %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
-  bb <- sf::st_bbox(aoi)
-  ROIBounds <- ee$Geometry$Rectangle(bb)
-
-    # ///IMPORTANT*****aspect layer will have holes where there is zero slope
-    # //Module import
-    getImagesLib = require('users/USFS_GTAC/modules:getImagesLib.js')
+  if(class(compositeArea)[[1]] == "sf"){
+    compositeArea <- compositeArea %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
+    bb <- sf::st_bbox(compositeArea)
+    compositeArea <- ee$Geometry$Rectangle(bb)
+  }
 
     # //set some params
     resolution = 10
     # //var projection = 'EPSG:5070';//26912';
 
+topoBands = getNEDTopography(compositeArea)$clip(compositeArea)
+outStack = image$addBands(topoBands)
 
-  # // Function to add USGS 1/3 arc second topography and derive slope, aspect, & hillshade
+
+return(outStack)
+
+}
+ # // Function to add USGS 1/3 arc second topography and derive slope, aspect, & hillshade
 
     getNEDTopography = function(compositeArea){
 
+      if(class(compositeArea)[[1]] == "sf"){
+        compositeArea <- compositeArea %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
+        bb <- sf::st_bbox(compositeArea)
+        compositeArea <- ee$Geometry$Rectangle(bb)
+      }
       #Import NED elevation data
       elevation = ee$Image('USGS/NED')
 
@@ -342,27 +356,20 @@ getTopo = function(aoi, crs){
 
       return(topo)
     }
-
-topoBands = addNEDTopography()$clip(ROIBounds)
-outStack = inImage$addBands(topoBands)
-
-
-return(outStack)
-
-}
-
 # ////////////////////////////////////////////////////////////////////////////
 #                     // ***** LOAD CLIMATE DATA ***** //
 # ////////////////////////////////////////////////////////////////////////////
 
-  getClimate = function(aoi, year, compositingPeriod, crs){
+  getClimate = function(compositeArea, year, compositingPeriod, crs){
 
   clim = ee$ImageCollection("OREGONSTATE/PRISM/AN81d")
 
-  # // Get boundary area of ROI
-  aoi <- aoi %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
-  bb <- sf::st_bbox(aoi)
-  ROIBounds <- ee$Geometry$Rectangle(bb)
+
+  if(class(compositeArea)[[1]] == "sf"){
+    compositeArea <- compositeArea %>% sf::st_transform(crs = 4326, proj4string = "+init=epsg:4326")
+    bb <- sf::st_bbox(compositeArea)
+    compositeArea <- ee$Geometry$Rectangle(bb)
+  }
 
   summer_startMonth = 6 #//Calendar month 1-12
   summer_startDay = 20 #//Day of month
@@ -371,9 +378,40 @@ return(outStack)
   winter_startDay = 21
   winter_length = 89
 
-  # // Function inputs are band, seasonal dates, season length
-  season_climate = function(band, month_start, day_start, season_length, year, compositingPeriod){
 
+  # // Calculate multi-year mean of total seasonal precipitation: summer, winter, seasonal difference
+  winter_precip = season_climate(clim,'ppt', winter_startMonth, winter_startDay, winter_length,  year, compositingPeriod)$mean()$rename("Winter Precip")
+  summer_precip = season_climate(clim,'ppt', summer_startMonth, summer_startDay, summer_length,  year, compositingPeriod)$mean()$rename("Summer Precip")
+
+  # // Calculate multi-year mean of mean seasonal temperature: summer, winter, seasonal difference
+  winter_tmean = season_climate(clim,'tmean', winter_startMonth, winter_startDay, winter_length,  year, compositingPeriod)$mean()$rename("Winter Temp")
+  summer_tmean = season_climate(clim,'tmean', summer_startMonth, summer_startDay, summer_length,  year, compositingPeriod)$mean()$rename("Summer Temp")
+
+  # // Calculate seasonal climate differences
+  difference_precip = summer_precip$subtract(winter_precip)$rename("Seasonal Precip Difference")
+  difference_tmean = summer_tmean$subtract(winter_tmean)$rename("Seasonal Temp Difference")
+
+  # // Stack climate bands together
+  climateBands = winter_precip$addBands(c(summer_precip,
+                                          difference_precip,
+                                          winter_tmean,
+                                          summer_tmean,
+                                          difference_tmean))
+
+
+  # // Clip to ROI boundaries
+  climateBands = climateBands$clip(compositeArea)
+
+  return(climateBands)
+
+  }
+
+
+
+  # // Function inputs are band, seasonal dates, season length
+  season_climate = function(image, band, month_start, day_start, season_length, year, compositingPeriod){
+
+    clim = image
     # // Specify year range for calculating multi-year average
     # // Same as year range used for image composite
     start_year = year
@@ -410,30 +448,3 @@ return(outStack)
     })
     ))) #// end iterating function over years
   }
-
-  # // Calculate multi-year mean of total seasonal precipitation: summer, winter, seasonal difference
-  winter_precip = season_climate('ppt', winter_startMonth, winter_startDay, winter_length, 2019, 1)$mean()$rename("Winter Precip")
-  summer_precip = season_climate('ppt', summer_startMonth, summer_startDay, summer_length, 2019, 1)$mean()$rename("Summer Precip")
-
-  # // Calculate multi-year mean of mean seasonal temperature: summer, winter, seasonal difference
-  winter_tmean = season_climate('tmean', winter_startMonth, winter_startDay, winter_length, 2019, 1)$mean()$rename("Winter Temp")
-  summer_tmean = season_climate('tmean', summer_startMonth, summer_startDay, summer_length, 2019, 1)$mean()$rename("Summer Temp")
-
-  # // Calculate seasonal climate differences
-  difference_precip = summer_precip$subtract(winter_precip)$rename("Seasonal Precip Difference")
-  difference_tmean = summer_tmean$subtract(winter_tmean)$rename("Seasonal Temp Difference")
-
-  # // Stack climate bands together
-  climateBands = winter_precip$addBands(c(summer_precip,
-                                          difference_precip,
-                                          winter_tmean,
-                                          summer_tmean,
-                                          difference_tmean))
-
-
-  # // Clip to ROI boundaries
-  climateBands = climateBands$clip(ROIbounds)
-
-  return(climateBands)
-
-}
