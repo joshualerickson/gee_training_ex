@@ -260,7 +260,7 @@ getTasseledCap = function(image) {
    arrayImage2D = arrayImage1D$toArray(1)
 
    componentsImage = ee$Image(coefficients)$matrixMultiply(arrayImage2D)$arrayProject(list(0))$arrayFlatten(list(c('brightness', 'greenness', 'wetness', 'fourth', 'fifth', 'sixth')))$float()
-meta = componentsImage$getInfo()
+
   return(image$addBands(componentsImage))
 }
 
