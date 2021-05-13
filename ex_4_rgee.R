@@ -244,3 +244,25 @@ results = data.frame(predicted = predicted$classification, observed = observed$C
 
 results %>% ggplot(aes(observed, predicted)) +
   geom_point() + geom_abline() + theme_bw()
+
+
+### Just for fun :)
+library(cvms)
+
+conf_mat_acc_plotting <- confusion_matrix(targets = results$observed,
+                                          predictions = results$predicted)
+
+plot_confusion_matrix(conf_mat_acc_plotting$`Confusion Matrix`[[1]])
+
+plot_confusion_matrix(conf_mat_acc_plotting$`Confusion Matrix`[[1]],
+                      add_sums = TRUE)
+
+plot_confusion_matrix(
+  conf_mat_acc_plotting$`Confusion Matrix`[[1]],
+  add_sums = TRUE,
+  sums_settings = sum_tile_settings(
+    palette = "Oranges",
+    label = "Total",
+    tc_tile_border_color = "black"
+  )
+)
